@@ -60,6 +60,27 @@ func ParseCrontab() ([]table.Row, error) {
 	return rows, nil
 }
 
+func (m *model) resizeTable() {
+	cols := m.table.Columns()
+
+	// fixed widths
+	cols[0].Width = 8  // Enabled
+	cols[1].Width = 15 // Schedule
+	cols[2].Width = 40 // Command
+
+	// remaining width for Comment
+	used := cols[0].Width + cols[1].Width + cols[2].Width
+
+	// account for spacing/padding (~4–6 depending on styles)
+	remaining := m.width - used - 6
+	if remaining < 10 {
+		remaining = 10 // minimum to avoid collapse
+	}
+	cols[3].Width = remaining
+
+	m.table.SetColumns(cols)
+}
+
 func InitialModel() model {
 	columns := []table.Column{
 		{Title: "Enabled", Width: 8},
@@ -84,6 +105,9 @@ func InitialModel() model {
 		table.WithFocused(true),
 		table.WithHeight(len(rows)+1),
 	)
+
+	t = StyledTable(t)
+
 	return model{table: t}
 }
 
@@ -98,7 +122,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.table.SetWidth(msg.Width)
-		m.table.SetHeight(msg.Height - 2) // space for footer
+		m.table.SetHeight(msg.Height - 2)
+		m.resizeTable()
 
 	case tea.KeyMsg:
 		if msg.String() == "q" {
