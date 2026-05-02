@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os/exec"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -21,7 +22,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	return "Hello from lazy-cron!\n\nPress q to quit.\n"
+	out, _ := exec.Command("crontab", "-l").Output()
+
+	message := "Cronjobs on your machine:\n\n" + string(out) + "\n\nPress q to quit.\n"
+	return message
 }
 
 func main() {
