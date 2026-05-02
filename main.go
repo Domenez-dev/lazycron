@@ -3,33 +3,120 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/table"
+	tea "charm.land/bubbletea/v2"
 )
 
-type model struct{}
+type model struct {
+	table  table.Model
+	width  int
+	height int
+}
 
-func (m model) Init() tea.Cmd { return nil }
+func ParseCrontab() ([]table.Row, error) {
+	out, err := exec.Command("crontab", "-l").Output()
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(out), "\n")
+
+	var rows []table.Row
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		enabled := "yes"
+		if strings.HasPrefix(line, "#") {
+			enabled = "no"
+			line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) < 6 {
+			continue
+		}
+
+		schedule := strings.Join(parts[:5], " ")
+		rest := strings.Join(parts[5:], " ")
+
+		cmd := rest
+		comment := ""
+
+		if i := strings.Index(rest, "#"); i != -1 {
+			cmd = strings.TrimSpace(rest[:i])
+			comment = strings.TrimSpace(rest[i+1:])
+		}
+
+		rows = append(rows, table.Row{
+			enabled,
+			schedule,
+			cmd,
+			comment,
+		})
+	}
+	return rows, nil
+}
+
+func InitialModel() model {
+	columns := []table.Column{
+		{Title: "Enabled", Width: 8},
+		{Title: "Schedule", Width: 15},
+		{Title: "Command", Width: 40},
+		{Title: "Comment", Width: 40},
+	}
+
+	rows, err := ParseCrontab()
+	if len(rows) == 0 {
+		rows = []table.Row{
+			{"-", "-", "No cronjobs found", "-"},
+		}
+	}
+	if err != nil {
+		return model{}
+	}
+
+	t := table.New(
+		table.WithColumns(columns),
+		table.WithRows(rows),
+		table.WithFocused(true),
+		table.WithHeight(len(rows)+1),
+	)
+	return model{table: t}
+}
+
+func (m model) Init() tea.Cmd {
+	return nil
+}
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.table.SetWidth(msg.Width)
+		m.table.SetHeight(msg.Height - 2) // space for footer
+
 	case tea.KeyMsg:
 		if msg.String() == "q" {
 			return m, tea.Quit
 		}
 	}
-	return m, nil
+
+	var cmd tea.Cmd
+	m.table, cmd = m.table.Update(msg)
+	return m, cmd
 }
 
-func (m model) View() string {
-	out, _ := exec.Command("crontab", "-l").Output()
-
-	message := "Cronjobs on your machine:\n\n" + string(out) + "\n\nPress q to quit.\n"
-	return message
+func (m model) View() tea.View {
+	return tea.NewView(m.table.View() + "\nPress q to quit.")
 }
 
 func main() {
-	p := tea.NewProgram(model{})
+	p := tea.NewProgram(InitialModel())
 	if _, err := p.Run(); err != nil {
 		fmt.Println("Error:", err)
 	}
