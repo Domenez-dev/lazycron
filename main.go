@@ -137,7 +137,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() tea.View {
-	return tea.NewView(m.table.View() + "\nPress q to quit.")
+	v := tea.NewView(m.table.View() + "\nPress q to quit.")
+	v.AltScreen = true
+	return v
 }
 
 func main() {
