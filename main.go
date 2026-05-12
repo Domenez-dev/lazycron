@@ -8,6 +8,7 @@ import (
 
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	robfigcron "github.com/robfig/cron/v3"
 )
 
@@ -182,6 +183,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
+
+		case "t":
+			cursor := m.table.Cursor()
+
+			m.jobs[cursor].Enabled = !m.jobs[cursor].Enabled
+			if m.jobs[cursor].Enabled {
+				m.jobs[cursor].NextRun = nextRun(m.jobs[cursor].Schedule)
+			} else {
+				m.jobs[cursor].NextRun = "-----"
+			}
+
+			_ = writeCrontab(m.jobs)
+			m.table.SetRows(jobsToRows(m.jobs))
+			return m, nil
 		}
 	}
 
@@ -191,7 +206,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() tea.View {
-	v := tea.NewView(m.table.View() + "\nPress q to quit.")
+	legend := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("  q") +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(" quit") +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("  t") +
+		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(" toggle enabled/disabled")
+	v := tea.NewView(m.table.View() + "\n" + legend)
 	v.AltScreen = true
 	return v
 }
