@@ -22,6 +22,9 @@ var (
 			Foreground(lipgloss.Color("229")).
 			Background(lipgloss.Color("57")).
 			Bold(true)
+
+	DisabledStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("240"))
 )
 
 func StyledTable(t table.Model) table.Model {

@@ -4,15 +4,27 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
+	robfigcron "github.com/robfig/cron/v3"
 )
 
 type model struct {
 	table  table.Model
 	width  int
 	height int
+}
+
+type Job struct {
+	Number   string
+	Enabled  string
+	Schedule string
+	NextRun  string
+	Cmd      string
+	Comment  string
+	Disabled bool
 }
 
 func ParseCrontab() ([]table.Row, error) {
@@ -23,14 +35,15 @@ func ParseCrontab() ([]table.Row, error) {
 	lines := strings.Split(string(out), "\n")
 
 	var rows []table.Row
-	for _, line := range lines {
+	for i, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 
-		enabled := "yes"
+		number := fmt.Sprintf("%d", i+1)
+		enabled := "*"
 		if strings.HasPrefix(line, "#") {
-			enabled = "no"
+			enabled = "-"
 			line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
 		}
 
@@ -49,10 +62,22 @@ func ParseCrontab() ([]table.Row, error) {
 			cmd = strings.TrimSpace(rest[:i])
 			comment = strings.TrimSpace(rest[i+1:])
 		}
+		var next_run string
+		parser := robfigcron.NewParser(
+			robfigcron.Minute | robfigcron.Hour | robfigcron.Dom | robfigcron.Month | robfigcron.Dow,
+		)
+		if sched, err := parser.Parse(schedule); err == nil {
+			next := sched.Next(time.Now())
+			next_run = next.Format("01-02 15:04")
+		} else {
+			next_run = "invalid"
+		}
 
 		rows = append(rows, table.Row{
+			number,
 			enabled,
 			schedule,
+			next_run,
 			cmd,
 			comment,
 		})
@@ -62,29 +87,23 @@ func ParseCrontab() ([]table.Row, error) {
 
 func (m *model) resizeTable() {
 	cols := m.table.Columns()
+	used := 2 + 2 + 15 + 15 + 40
 
-	// fixed widths
-	cols[0].Width = 8  // Enabled
-	cols[1].Width = 15 // Schedule
-	cols[2].Width = 40 // Command
-
-	// remaining width for Comment
-	used := cols[0].Width + cols[1].Width + cols[2].Width
-
-	// account for spacing/padding (~4–6 depending on styles)
-	remaining := m.width - used - 6
+	remaining := m.width - used - 6 // for padding
 	if remaining < 10 {
-		remaining = 10 // minimum to avoid collapse
+		remaining = 10
 	}
-	cols[3].Width = remaining
+	cols[4].Width = remaining // Comments
 
 	m.table.SetColumns(cols)
 }
 
 func InitialModel() model {
 	columns := []table.Column{
-		{Title: "Enabled", Width: 8},
+		{Title: "#", Width: 2},
+		{Title: "E", Width: 2},
 		{Title: "Schedule", Width: 15},
+		{Title: "Next Run", Width: 15},
 		{Title: "Command", Width: 40},
 		{Title: "Comment", Width: 40},
 	}
