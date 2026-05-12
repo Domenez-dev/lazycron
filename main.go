@@ -13,41 +13,53 @@ import (
 
 type model struct {
 	table  table.Model
+	jobs   []Job
 	width  int
 	height int
 }
 
 type Job struct {
 	Number   string
-	Enabled  string
+	Enabled  bool
 	Schedule string
 	NextRun  string
 	Cmd      string
 	Comment  string
-	Disabled bool
 }
 
-func ParseCrontab() ([]table.Row, error) {
+func nextRun(schedule string) string {
+	parser := robfigcron.NewParser(
+		robfigcron.Minute | robfigcron.Hour | robfigcron.Dom | robfigcron.Month | robfigcron.Dow,
+	)
+	if sched, err := parser.Parse(schedule); err == nil {
+		return sched.Next(time.Now()).Format("01-02 15:04")
+	}
+	return "invalid"
+}
+
+func ParseCrontab() ([]Job, error) {
 	out, err := exec.Command("crontab", "-l").Output()
 	if err != nil {
 		return nil, err
 	}
 	lines := strings.Split(string(out), "\n")
 
-	var rows []table.Row
-	for i, line := range lines {
+	var jobs []Job
+	lineNum := 0
+	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		lineNum++
 
-		number := fmt.Sprintf("%d", i+1)
-		enabled := "*"
+		enabled := true
+		parsed := line
 		if strings.HasPrefix(line, "#") {
-			enabled = "-"
-			line = strings.TrimSpace(strings.TrimPrefix(line, "#"))
+			enabled = false
+			parsed = strings.TrimSpace(strings.TrimPrefix(line, "#"))
 		}
 
-		parts := strings.Fields(line)
+		parts := strings.Fields(parsed)
 		if len(parts) < 6 {
 			continue
 		}
@@ -57,44 +69,67 @@ func ParseCrontab() ([]table.Row, error) {
 
 		cmd := rest
 		comment := ""
-
 		if i := strings.Index(rest, "#"); i != -1 {
 			cmd = strings.TrimSpace(rest[:i])
 			comment = strings.TrimSpace(rest[i+1:])
 		}
-		var next_run string
-		parser := robfigcron.NewParser(
-			robfigcron.Minute | robfigcron.Hour | robfigcron.Dom | robfigcron.Month | robfigcron.Dow,
-		)
-		if sched, err := parser.Parse(schedule); err == nil {
-			next := sched.Next(time.Now())
-			next_run = next.Format("01-02 15:04")
+
+		var nr string
+		if enabled {
+			nr = nextRun(schedule)
 		} else {
-			next_run = "invalid"
+			nr = "-----"
 		}
 
-		rows = append(rows, table.Row{
-			number,
-			enabled,
-			schedule,
-			next_run,
-			cmd,
-			comment,
+		jobs = append(jobs, Job{
+			Number:   fmt.Sprintf("%d", lineNum),
+			Enabled:  enabled,
+			Schedule: schedule,
+			NextRun:  nr,
+			Cmd:      cmd,
+			Comment:  comment,
 		})
 	}
-	return rows, nil
+	return jobs, nil
+}
+
+func jobsToRows(jobs []Job) []table.Row {
+	rows := make([]table.Row, len(jobs))
+	for i, j := range jobs {
+		e := "*"
+		if !j.Enabled {
+			e = "-"
+		}
+		rows[i] = table.Row{j.Number, e, j.Schedule, j.NextRun, j.Cmd, j.Comment}
+	}
+	return rows
+}
+
+func writeCrontab(jobs []Job) error {
+	var sb strings.Builder
+	for _, j := range jobs {
+		line := fmt.Sprintf("%s %s", j.Schedule, j.Cmd)
+		if j.Comment != "" {
+			line += " # " + j.Comment
+		}
+		if !j.Enabled {
+			line = "# " + line
+		}
+		sb.WriteString(line + "\n")
+	}
+	cmd := exec.Command("crontab", "-")
+	cmd.Stdin = strings.NewReader(sb.String())
+	return cmd.Run()
 }
 
 func (m *model) resizeTable() {
 	cols := m.table.Columns()
-	used := 2 + 2 + 15 + 15 + 40
-
-	remaining := m.width - used - 6 // for padding
+	used := 2 + 2 + 15 + 15 + 40 // #, E, Schedule, NextRun, Comment
+	remaining := m.width - used - 6
 	if remaining < 10 {
 		remaining = 10
 	}
-	cols[4].Width = remaining // Comments
-
+	cols[4].Width = remaining
 	m.table.SetColumns(cols)
 }
 
@@ -108,14 +143,14 @@ func InitialModel() model {
 		{Title: "Comment", Width: 40},
 	}
 
-	rows, err := ParseCrontab()
-	if len(rows) == 0 {
-		rows = []table.Row{
-			{"-", "-", "No cronjobs found", "-"},
-		}
+	jobs, err := ParseCrontab()
+	if err != nil || len(jobs) == 0 {
+		jobs = []Job{}
 	}
-	if err != nil {
-		return model{}
+
+	rows := jobsToRows(jobs)
+	if len(rows) == 0 {
+		rows = []table.Row{{"-", "-", "No cronjobs found", "-", "-", "-"}}
 	}
 
 	t := table.New(
@@ -124,10 +159,9 @@ func InitialModel() model {
 		table.WithFocused(true),
 		table.WithHeight(len(rows)+1),
 	)
-
 	t = StyledTable(t)
 
-	return model{table: t}
+	return model{table: t, jobs: jobs}
 }
 
 func (m model) Init() tea.Cmd {
@@ -145,7 +179,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeTable()
 
 	case tea.KeyMsg:
-		if msg.String() == "q" {
+		switch msg.String() {
+		case "q":
 			return m, tea.Quit
 		}
 	}
