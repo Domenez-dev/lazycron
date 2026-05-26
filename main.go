@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ const (
 	addView
 	editView
 	deleteView
+	gotoView
+	expandView
 )
 
 type model struct {
@@ -32,6 +35,8 @@ type model struct {
 	formFocus  int
 	formErr    string
 	editIndex  int
+	gotoInput  textinput.Model
+	gotoErr    string
 }
 
 type Job struct {
@@ -220,6 +225,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == deleteView {
 			return m.updateDeleteConfirm(msg)
 		}
+		if m.state == gotoView {
+			return m.updateGoto(msg)
+		}
+		if m.state == expandView {
+			return m.updateExpand(msg)
+		}
 
 		switch msg.String() {
 		case "q":
@@ -257,7 +268,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.state = deleteView
 			return m, nil
 
-		case "t":
+		case "t", " ":
 			cursor := m.table.Cursor()
 			if len(m.jobs) == 0 {
 				return m, nil
@@ -268,10 +279,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.jobs[cursor].NextRun = "-----"
 			}
-
 			_ = writeCrontab(m.jobs)
 			m.table.SetRows(jobsToRows(m.jobs))
 			return m, nil
+
+		case "up", "k":
+			if len(m.jobs) > 0 {
+				if m.table.Cursor() == 0 {
+					m.table.SetCursor(len(m.jobs) - 1)
+				} else {
+					m.table.MoveUp(1)
+				}
+			}
+			return m, nil
+
+		case "down", "j":
+			if len(m.jobs) > 0 {
+				if m.table.Cursor() == len(m.jobs)-1 {
+					m.table.SetCursor(0)
+				} else {
+					m.table.MoveDown(1)
+				}
+			}
+			return m, nil
+
+		case "enter":
+			if len(m.jobs) > 0 {
+				m.editIndex = m.table.Cursor()
+				m.state = expandView
+			}
+			return m, nil
+
+		case ":":
+			m.gotoInput = textinput.New()
+			m.gotoInput.Placeholder = "row #"
+			m.gotoInput.CharLimit = 4
+			m.gotoInput.Focus()
+			m.gotoErr = ""
+			m.state = gotoView
+			return m, textinput.Blink
 		}
 	}
 
@@ -279,6 +325,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.table, cmd = m.table.Update(msg)
 		return m, cmd
+	}
+	return m, nil
+}
+
+func (m model) updateGoto(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.state = listView
+		return m, nil
+	case "enter":
+		val := strings.TrimSpace(m.gotoInput.Value())
+		n, err := strconv.Atoi(val)
+		if err != nil || n < 1 || n > len(m.jobs) {
+			m.gotoErr = fmt.Sprintf("invalid row (1-%d)", len(m.jobs))
+			return m, nil
+		}
+		m.table.SetCursor(n - 1)
+		m.state = listView
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.gotoInput, cmd = m.gotoInput.Update(msg)
+	return m, cmd
+}
+
+func (m model) updateExpand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "enter", "q":
+		m.state = listView
 	}
 	return m, nil
 }
@@ -397,6 +472,9 @@ func (m model) View() tea.View {
 	if m.state == deleteView {
 		return m.viewDeleteConfirm()
 	}
+	if m.state == expandView {
+		return m.viewExpand()
+	}
 
 	key := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
@@ -462,6 +540,32 @@ func (m model) viewAddForm() tea.View {
 
 	content := title + rows.String() + errLine + legend
 	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
+}
+
+func (m model) viewExpand() tea.View {
+	j := m.jobs[m.editIndex]
+	bold := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Width(12)
+	val := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	key := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+
+	enabled := "yes"
+	if !j.Enabled {
+		enabled = "no"
+	}
+
+	title := bold.Render("  Job #"+j.Number) + "\n\n"
+	info := "  " + label.Render("Schedule") + val.Render(j.Schedule) + "\n" +
+		"  " + label.Render("Next Run") + val.Render(j.NextRun) + "\n" +
+		"  " + label.Render("Command") + val.Render(j.Cmd) + "\n" +
+		"  " + label.Render("Comment") + val.Render(j.Comment) + "\n" +
+		"  " + label.Render("Enabled") + val.Render(enabled) + "\n"
+	legend := "\n" + key.Render("  esc") + dim.Render("/") + key.Render("enter") + dim.Render(" close")
+
+	v := tea.NewView(title + info + legend)
 	v.AltScreen = true
 	return v
 }
