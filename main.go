@@ -18,17 +18,20 @@ type viewState int
 const (
 	listView viewState = iota
 	addView
+	editView
+	deleteView
 )
 
 type model struct {
-	table       table.Model
-	jobs        []Job
-	width       int
-	height      int
-	state       viewState
-	formInputs  [3]textinput.Model
-	formFocus   int
-	formErr     string
+	table      table.Model
+	jobs       []Job
+	width      int
+	height     int
+	state      viewState
+	formInputs [3]textinput.Model
+	formFocus  int
+	formErr    string
+	editIndex  int
 }
 
 type Job struct {
@@ -211,8 +214,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		if m.state == addView {
+		if m.state == addView || m.state == editView {
 			return m.updateAddForm(msg)
+		}
+		if m.state == deleteView {
+			return m.updateDeleteConfirm(msg)
 		}
 
 		switch msg.String() {
@@ -225,6 +231,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.formFocus = 0
 			m.formErr = ""
 			return m, textinput.Blink
+
+		case "e":
+			cursor := m.table.Cursor()
+			if len(m.jobs) == 0 {
+				return m, nil
+			}
+			j := m.jobs[cursor]
+			inputs := newFormInputs()
+			inputs[0].SetValue(j.Schedule)
+			inputs[1].SetValue(j.Cmd)
+			inputs[2].SetValue(j.Comment)
+			m.formInputs = inputs
+			m.formFocus = 0
+			m.formErr = ""
+			m.editIndex = cursor
+			m.state = editView
+			return m, textinput.Blink
+
+		case "d":
+			if len(m.jobs) == 0 {
+				return m, nil
+			}
+			m.editIndex = m.table.Cursor()
+			m.state = deleteView
+			return m, nil
 
 		case "t":
 			cursor := m.table.Cursor()
@@ -306,15 +337,24 @@ func (m model) updateAddForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		job := Job{
-			Number:   fmt.Sprintf("%d", len(m.jobs)+1),
-			Enabled:  true,
-			Schedule: schedule,
-			NextRun:  nextRun(schedule),
-			Cmd:      command,
-			Comment:  comment,
+		if m.state == editView {
+			j := &m.jobs[m.editIndex]
+			j.Schedule = schedule
+			j.Cmd = command
+			j.Comment = comment
+			if j.Enabled {
+				j.NextRun = nextRun(schedule)
+			}
+		} else {
+			m.jobs = append(m.jobs, Job{
+				Number:   fmt.Sprintf("%d", len(m.jobs)+1),
+				Enabled:  true,
+				Schedule: schedule,
+				NextRun:  nextRun(schedule),
+				Cmd:      command,
+				Comment:  comment,
+			})
 		}
-		m.jobs = append(m.jobs, job)
 		_ = writeCrontab(m.jobs)
 
 		rows := jobsToRows(m.jobs)
@@ -329,17 +369,65 @@ func (m model) updateAddForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y":
+		m.jobs = append(m.jobs[:m.editIndex], m.jobs[m.editIndex+1:]...)
+		for i := range m.jobs {
+			m.jobs[i].Number = fmt.Sprintf("%d", i+1)
+		}
+		_ = writeCrontab(m.jobs)
+		rows := jobsToRows(m.jobs)
+		if len(rows) == 0 {
+			rows = []table.Row{{"-", "-", "No cronjobs found", "-", "-", "-"}}
+		}
+		m.table.SetRows(rows)
+		m.table.SetHeight(len(rows) + 1)
+		m.state = listView
+	case "n", "esc":
+		m.state = listView
+	}
+	return m, nil
+}
+
 func (m model) View() tea.View {
-	if m.state == addView {
+	if m.state == addView || m.state == editView {
 		return m.viewAddForm()
+	}
+	if m.state == deleteView {
+		return m.viewDeleteConfirm()
 	}
 
 	key := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	legend := key.Render("  q") + dim.Render(" quit") +
 		key.Render("  t") + dim.Render(" toggle") +
-		key.Render("  a") + dim.Render(" add job")
+		key.Render("  a") + dim.Render(" add") +
+		key.Render("  e") + dim.Render(" edit") +
+		key.Render("  d") + dim.Render(" delete")
 	v := tea.NewView(m.table.View() + "\n" + legend)
+	v.AltScreen = true
+	return v
+}
+
+func (m model) viewDeleteConfirm() tea.View {
+	j := m.jobs[m.editIndex]
+	key := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	bold := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("196"))
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Width(12)
+	val := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+
+	title := bold.Render("  Delete Cron Job #"+j.Number+"?") + "\n\n"
+	info := "  " + label.Render("Schedule") + val.Render(j.Schedule) + "\n" +
+		"  " + label.Render("Command") + val.Render(j.Cmd) + "\n"
+	if j.Comment != "" {
+		info += "  " + label.Render("Comment") + val.Render(j.Comment) + "\n"
+	}
+	legend := "\n" + key.Render("  y") + dim.Render(" confirm delete") +
+		key.Render("  n") + dim.Render("/") + key.Render("esc") + dim.Render(" cancel")
+
+	v := tea.NewView(title + info + legend)
 	v.AltScreen = true
 	return v
 }
@@ -351,7 +439,11 @@ func (m model) viewAddForm() tea.View {
 	label := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Width(12)
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 
-	title := bold.Render("  Add New Cron Job") + "\n\n"
+	titleText := "  Add New Cron Job"
+	if m.state == editView {
+		titleText = "  Edit Cron Job #" + m.jobs[m.editIndex].Number
+	}
+	title := bold.Render(titleText) + "\n\n"
 
 	fields := []string{"Schedule", "Command", "Comment"}
 	var rows strings.Builder
