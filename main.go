@@ -7,16 +7,28 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	robfigcron "github.com/robfig/cron/v3"
 )
 
+type viewState int
+
+const (
+	listView viewState = iota
+	addView
+)
+
 type model struct {
-	table  table.Model
-	jobs   []Job
-	width  int
-	height int
+	table       table.Model
+	jobs        []Job
+	width       int
+	height      int
+	state       viewState
+	formInputs  [3]textinput.Model
+	formFocus   int
+	formErr     string
 }
 
 type Job struct {
@@ -134,6 +146,23 @@ func (m *model) resizeTable() {
 	m.table.SetColumns(cols)
 }
 
+func newFormInputs() [3]textinput.Model {
+	schedule := textinput.New()
+	schedule.Placeholder = "* * * * *"
+	schedule.Focus()
+	schedule.CharLimit = 64
+
+	command := textinput.New()
+	command.Placeholder = "/path/to/script.sh"
+	command.CharLimit = 256
+
+	comment := textinput.New()
+	comment.Placeholder = "optional description"
+	comment.CharLimit = 128
+
+	return [3]textinput.Model{schedule, command, comment}
+}
+
 func InitialModel() model {
 	columns := []table.Column{
 		{Title: "#", Width: 2},
@@ -162,7 +191,7 @@ func InitialModel() model {
 	)
 	t = StyledTable(t)
 
-	return model{table: t, jobs: jobs}
+	return model{table: t, jobs: jobs, formInputs: newFormInputs()}
 }
 
 func (m model) Init() tea.Cmd {
@@ -175,18 +204,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.table.SetWidth(msg.Width)
-		m.table.SetHeight(msg.Height - 2)
-		m.resizeTable()
+		if m.state == listView {
+			m.table.SetWidth(msg.Width)
+			m.table.SetHeight(msg.Height - 2)
+			m.resizeTable()
+		}
 
 	case tea.KeyMsg:
+		if m.state == addView {
+			return m.updateAddForm(msg)
+		}
+
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
 
+		case "a":
+			m.state = addView
+			m.formInputs = newFormInputs()
+			m.formFocus = 0
+			m.formErr = ""
+			return m, textinput.Blink
+
 		case "t":
 			cursor := m.table.Cursor()
-
+			if len(m.jobs) == 0 {
+				return m, nil
+			}
 			m.jobs[cursor].Enabled = !m.jobs[cursor].Enabled
 			if m.jobs[cursor].Enabled {
 				m.jobs[cursor].NextRun = nextRun(m.jobs[cursor].Schedule)
@@ -200,17 +244,132 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	if m.state == listView {
+		var cmd tea.Cmd
+		m.table, cmd = m.table.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m model) updateAddForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.state = listView
+		return m, nil
+
+	case "tab", "down":
+		m.formFocus = (m.formFocus + 1) % 3
+		for i := range m.formInputs {
+			if i == m.formFocus {
+				m.formInputs[i].Focus()
+			} else {
+				m.formInputs[i].Blur()
+			}
+		}
+		return m, textinput.Blink
+
+	case "shift+tab", "up":
+		m.formFocus = (m.formFocus + 2) % 3
+		for i := range m.formInputs {
+			if i == m.formFocus {
+				m.formInputs[i].Focus()
+			} else {
+				m.formInputs[i].Blur()
+			}
+		}
+		return m, textinput.Blink
+
+	case "enter":
+		if m.formFocus < 2 {
+			m.formFocus++
+			for i := range m.formInputs {
+				if i == m.formFocus {
+					m.formInputs[i].Focus()
+				} else {
+					m.formInputs[i].Blur()
+				}
+			}
+			return m, textinput.Blink
+		}
+		// Submit
+		schedule := strings.TrimSpace(m.formInputs[0].Value())
+		command := strings.TrimSpace(m.formInputs[1].Value())
+		comment := strings.TrimSpace(m.formInputs[2].Value())
+
+		if schedule == "" || command == "" {
+			m.formErr = "schedule and command are required"
+			return m, nil
+		}
+		if nextRun(schedule) == "invalid" {
+			m.formErr = "invalid cron schedule"
+			return m, nil
+		}
+
+		job := Job{
+			Number:   fmt.Sprintf("%d", len(m.jobs)+1),
+			Enabled:  true,
+			Schedule: schedule,
+			NextRun:  nextRun(schedule),
+			Cmd:      command,
+			Comment:  comment,
+		}
+		m.jobs = append(m.jobs, job)
+		_ = writeCrontab(m.jobs)
+
+		rows := jobsToRows(m.jobs)
+		m.table.SetRows(rows)
+		m.table.SetHeight(len(rows) + 1)
+		m.state = listView
+		return m, nil
+	}
+
 	var cmd tea.Cmd
-	m.table, cmd = m.table.Update(msg)
+	m.formInputs[m.formFocus], cmd = m.formInputs[m.formFocus].Update(msg)
 	return m, cmd
 }
 
 func (m model) View() tea.View {
-	legend := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("  q") +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(" quit") +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("  t") +
-		lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render(" toggle enabled/disabled")
+	if m.state == addView {
+		return m.viewAddForm()
+	}
+
+	key := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	legend := key.Render("  q") + dim.Render(" quit") +
+		key.Render("  t") + dim.Render(" toggle") +
+		key.Render("  a") + dim.Render(" add job")
 	v := tea.NewView(m.table.View() + "\n" + legend)
+	v.AltScreen = true
+	return v
+}
+
+func (m model) viewAddForm() tea.View {
+	key := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	bold := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Width(12)
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+
+	title := bold.Render("  Add New Cron Job") + "\n\n"
+
+	fields := []string{"Schedule", "Command", "Comment"}
+	var rows strings.Builder
+	for i, f := range fields {
+		rows.WriteString("  " + label.Render(f) + m.formInputs[i].View() + "\n")
+	}
+
+	var errLine string
+	if m.formErr != "" {
+		errLine = "\n  " + errStyle.Render(m.formErr) + "\n"
+	}
+
+	legend := "\n" + key.Render("  enter") + dim.Render(" next/confirm") +
+		key.Render("  tab") + dim.Render(" next field") +
+		key.Render("  esc") + dim.Render(" cancel")
+
+	content := title + rows.String() + errLine + legend
+	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
 }
