@@ -472,6 +472,9 @@ func (m model) View() tea.View {
 	if m.state == deleteView {
 		return m.viewDeleteConfirm()
 	}
+	if m.state == gotoView {
+		return m.viewGoto()
+	}
 	if m.state == expandView {
 		return m.viewExpand()
 	}
@@ -482,7 +485,8 @@ func (m model) View() tea.View {
 		key.Render("  t") + dim.Render(" toggle") +
 		key.Render("  a") + dim.Render(" add") +
 		key.Render("  e") + dim.Render(" edit") +
-		key.Render("  d") + dim.Render(" delete")
+		key.Render("  d") + dim.Render(" delete") +
+		key.Render("  :") + dim.Render(" goto")
 	v := tea.NewView(m.table.View() + "\n" + legend)
 	v.AltScreen = true
 	return v
@@ -539,6 +543,20 @@ func (m model) viewAddForm() tea.View {
 		key.Render("  esc") + dim.Render(" cancel")
 
 	content := title + rows.String() + errLine + legend
+	v := tea.NewView(content)
+	v.AltScreen = true
+	return v
+}
+
+func (m model) viewGoto() tea.View {
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	prompt := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render(":")
+
+	errLine := ""
+	if m.gotoErr != "" {
+		errLine = "  " + errStyle.Render(m.gotoErr) + "\n"
+	}
+	content := m.table.View() + "\n" + errLine + prompt + " " + m.gotoInput.View()
 	v := tea.NewView(content)
 	v.AltScreen = true
 	return v
