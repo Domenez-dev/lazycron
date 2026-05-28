@@ -46,14 +46,23 @@ func humanReadableSchedule(expr string) string {
 		segments = append(segments, t)
 	}
 
+	// DOM and DOW use OR logic in cron — show both when both are set.
+	domDesc := ""
+	if domF != "*" {
+		domDesc = buildDOMDesc(domF)
+	}
+	dowDesc := ""
 	if dowF != "*" {
-		if d := describeField(dowF, dowName); d != "" {
-			segments = append(segments, "on "+d)
-		}
-	} else if domF != "*" {
-		if d := buildDOMDesc(domF); d != "" {
-			segments = append(segments, d)
-		}
+		dowDesc = describeField(dowF, dowName)
+	}
+
+	switch {
+	case domDesc != "" && dowDesc != "":
+		segments = append(segments, "on "+domDesc+" and on "+dowDesc)
+	case domDesc != "":
+		segments = append(segments, "on "+domDesc)
+	case dowDesc != "":
+		segments = append(segments, "on "+dowDesc)
 	}
 
 	if monthF != "*" {
@@ -66,73 +75,84 @@ func humanReadableSchedule(expr string) string {
 		return ""
 	}
 
-	result := strings.Join(segments, ", ")
+	result := strings.Join(segments, " ")
 	return strings.ToUpper(result[:1]) + result[1:] + "."
 }
 
 func buildTimeDesc(min, hour string) string {
-	// Every minute
-	if min == "*" && hour == "*" {
-		return "every minute"
-	}
+	minStep, minIsStep := parseStep(min)
+	hourStep, hourIsStep := parseStep(hour)
+	minIsWild := min == "*"
+	hourIsWild := hour == "*"
+	minIsInt := isInt(min)
+	hourIsInt := isInt(hour)
 
-	// Every N minutes (*/N * * * *)
-	if step, ok := parseStep(min); ok && hour == "*" {
-		if step == 1 {
+	switch {
+	// * * → every minute
+	case minIsWild && hourIsWild:
+		return "every minute"
+
+	// */N * → every N minutes
+	case minIsStep && hourIsWild:
+		if minStep == 1 {
 			return "every minute"
 		}
-		return fmt.Sprintf("every %d minutes", step)
-	}
+		return fmt.Sprintf("every %d minutes", minStep)
 
-	// Exact time (MM HH)
-	if isInt(min) && isInt(hour) {
+	// */N HH → at every Nth minute past hour HH
+	case minIsStep && hourIsInt:
+		h, _ := strconv.Atoi(hour)
+		return fmt.Sprintf("at every %s minute past hour %02d", ordinal(minStep), h)
+
+	// MM HH → at HH:MM
+	case minIsInt && hourIsInt:
 		h, _ := strconv.Atoi(hour)
 		m, _ := strconv.Atoi(min)
 		return fmt.Sprintf("at %02d:%02d", h, m)
-	}
 
-	// Every N hours at minute 0 (0 */N)
-	if (min == "0" || min == "00") && hour != "*" {
-		if step, ok := parseStep(hour); ok {
-			if step == 1 {
-				return "every hour"
-			}
-			return fmt.Sprintf("every %d hours", step)
+	// 0 */N → every N hours
+	case (min == "0" || min == "00") && hourIsStep:
+		if hourStep == 1 {
+			return "every hour"
 		}
-	}
+		return fmt.Sprintf("every %d hours", hourStep)
 
-	// Specific minute, every hour (* * wildcard hour)
-	if isInt(min) && hour == "*" {
+	// 0 * → every hour
+	case (min == "0" || min == "00") && hourIsWild:
+		return "every hour"
+
+	// MM * → at minute MM past every hour
+	case minIsInt && hourIsWild:
 		m, _ := strconv.Atoi(min)
-		if m == 0 {
-			return "at the start of every hour"
-		}
-		return fmt.Sprintf("at minute %d of every hour", m)
-	}
+		return fmt.Sprintf("at minute %d past every hour", m)
 
-	// Every minute of a specific hour (* HH)
-	if min == "*" && isInt(hour) {
+	// * HH → every minute past hour HH
+	case minIsWild && hourIsInt:
 		h, _ := strconv.Atoi(hour)
-		return fmt.Sprintf("every minute of hour %02d", h)
-	}
+		return fmt.Sprintf("every minute past hour %02d", h)
 
-	// Comma-separated hours with minute 0: 0 9,17 * * *
-	if isInt(min) && strings.Contains(hour, ",") {
+	// MM */N → at minute MM past every Nth hour
+	case minIsInt && hourIsStep:
 		m, _ := strconv.Atoi(min)
-		hours := strings.Split(hour, ",")
-		formatted := make([]string, 0, len(hours))
-		for _, h := range hours {
+		return fmt.Sprintf("at minute %d past every %s hour", m, ordinal(hourStep))
+
+	// MM HH,HH,... → at HH:MM and HH:MM
+	case minIsInt && strings.Contains(hour, ","):
+		m, _ := strconv.Atoi(min)
+		hourParts := strings.Split(hour, ",")
+		times := make([]string, 0, len(hourParts))
+		for _, h := range hourParts {
 			h = strings.TrimSpace(h)
 			if !isInt(h) {
 				return ""
 			}
 			n, _ := strconv.Atoi(h)
-			formatted = append(formatted, fmt.Sprintf("%02d:%02d", n, m))
+			times = append(times, fmt.Sprintf("%02d:%02d", n, m))
 		}
-		if len(formatted) == 2 {
-			return "at " + formatted[0] + " and " + formatted[1]
+		if len(times) == 2 {
+			return "at " + times[0] + " and " + times[1]
 		}
-		return "at " + strings.Join(formatted[:len(formatted)-1], ", ") + ", and " + formatted[len(formatted)-1]
+		return "at " + strings.Join(times[:len(times)-1], ", ") + ", and " + times[len(times)-1]
 	}
 
 	return ""
@@ -140,16 +160,31 @@ func buildTimeDesc(min, hour string) string {
 
 func buildDOMDesc(dom string) string {
 	if isInt(dom) {
-		return fmt.Sprintf("on day %s of the month", dom)
+		return fmt.Sprintf("day %s of the month", dom)
 	}
 	if step, ok := parseStep(dom); ok {
-		return fmt.Sprintf("every %d days", step)
+		return fmt.Sprintf("every %s day-of-month", ordinal(step))
 	}
 	if strings.Contains(dom, "-") {
 		parts := strings.SplitN(dom, "-", 2)
 		if isInt(parts[0]) && isInt(parts[1]) {
-			return fmt.Sprintf("on days %s through %s of the month", parts[0], parts[1])
+			return fmt.Sprintf("every day-of-month from %s through %s", parts[0], parts[1])
 		}
+	}
+	if strings.Contains(dom, ",") {
+		items := strings.Split(dom, ",")
+		strs := make([]string, 0, len(items))
+		for _, item := range items {
+			item = strings.TrimSpace(item)
+			if !isInt(item) {
+				return ""
+			}
+			strs = append(strs, item)
+		}
+		if len(strs) == 2 {
+			return fmt.Sprintf("days %s and %s of the month", strs[0], strs[1])
+		}
+		return "days " + strings.Join(strs[:len(strs)-1], ", ") + ", and " + strs[len(strs)-1] + " of the month"
 	}
 	return ""
 }
@@ -185,6 +220,25 @@ func describeField(field string, names map[string]string) string {
 		return strings.Join(result[:len(result)-1], ", ") + ", and " + result[len(result)-1]
 	}
 	return ""
+}
+
+func ordinal(n int) string {
+	suffix := "th"
+	switch n % 10 {
+	case 1:
+		if n%100 != 11 {
+			suffix = "st"
+		}
+	case 2:
+		if n%100 != 12 {
+			suffix = "nd"
+		}
+	case 3:
+		if n%100 != 13 {
+			suffix = "rd"
+		}
+	}
+	return fmt.Sprintf("%d%s", n, suffix)
 }
 
 func parseStep(field string) (int, bool) {
