@@ -97,10 +97,18 @@ func (m model) viewAddForm() tea.View {
 	}
 	title := bold.Render(titleText) + "\n\n"
 
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	hintPad := strings.Repeat(" ", 12) // align with input (label width)
+
 	fields := []string{"Schedule", "Command", "Comment"}
 	var rows strings.Builder
 	for i, f := range fields {
 		rows.WriteString("  " + label.Render(f) + m.formInputs[i].View() + "\n")
+		if i == 0 {
+			if translation := humanReadableSchedule(m.formInputs[0].Value()); translation != "" {
+				rows.WriteString("  " + hintPad + hint.Render(translation) + "\n")
+			}
+		}
 	}
 
 	var errLine string
