@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -29,8 +30,21 @@ func (m model) bottomBar() string {
 		return left + strings.Repeat(" ", pad) + right
 
 	case addView, editView:
+		if m.schedMode == scheduleModeBuild && m.formFocus == 0 {
+			return k.Render(" ↑↓") + d.Render(" cycle") + s +
+				k.Render("←→") + d.Render(" field") + s +
+				k.Render("alt+j") + d.Render(" type") + s +
+				k.Render("alt+m") + d.Render(" manual") + s +
+				k.Render("tab") + d.Render(" command") + s +
+				k.Render("esc") + d.Render(" cancel")
+		}
+		modeHint := "builder"
+		if m.schedMode == scheduleModeBuild {
+			modeHint = "manual"
+		}
 		return k.Render(" enter") + d.Render(" next/confirm") + s +
 			k.Render("tab") + d.Render(" next field") + s +
+			k.Render("alt+m") + d.Render(" "+modeHint+" mode") + s +
 			k.Render("esc") + d.Render(" cancel")
 
 	case deleteView:
@@ -87,18 +101,29 @@ func (m model) View() tea.View {
 }
 
 func (m model) viewAddForm() tea.View {
+	var content string
+	if m.schedMode == scheduleModeBuild {
+		content = m.viewAddFormBuilder()
+	} else {
+		content = m.viewAddFormManual()
+	}
+	v := tea.NewView(m.withBottomBar(content))
+	v.AltScreen = true
+	return v
+}
+
+func (m model) viewAddFormManual() string {
 	bold := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
 	label := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Width(12)
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	hintPad := strings.Repeat(" ", 12)
 
 	titleText := "  Add New Cron Job"
 	if m.state == editView {
 		titleText = "  Edit Cron Job #" + m.jobs[m.editIndex].Number
 	}
 	title := bold.Render(titleText) + "\n\n"
-
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
-	hintPad := strings.Repeat(" ", 12) // align with input (label width)
 
 	fields := []string{"Schedule", "Command", "Comment"}
 	var rows strings.Builder
@@ -116,9 +141,112 @@ func (m model) viewAddForm() tea.View {
 		errLine = "\n  " + errStyle.Render(m.formErr) + "\n"
 	}
 
-	v := tea.NewView(m.withBottomBar(title + rows.String() + errLine))
-	v.AltScreen = true
-	return v
+	return title + rows.String() + errLine
+}
+
+func (m model) viewAddFormBuilder() string {
+	bold := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("205"))
+	label := lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Width(12)
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+
+	focusedBox := lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
+	normalBox := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	customBox := lipgloss.NewStyle().Foreground(lipgloss.Color("226")) // yellow = custom value
+
+	titleText := "  Add New Cron Job"
+	if m.state == editView {
+		titleText = "  Edit Cron Job #" + m.jobs[m.editIndex].Number
+	}
+	title := bold.Render(titleText) + "\n\n"
+
+	subNames := [5]string{"Minute", "Hour", "Day", "Month", "weekday"}
+	// Each column is 8 chars wide: [%-5s] (7) + 1 space, except last.
+	colW := 8
+
+	var labelRow strings.Builder
+	labelRow.WriteString("  " + label.Render("Schedule"))
+	for i, name := range subNames {
+		if i < 4 {
+			labelRow.WriteString(fmt.Sprintf("%-*s", colW, name))
+		} else {
+			labelRow.WriteString(name)
+		}
+	}
+	labelRow.WriteString("\n")
+
+	// Boxes row
+	var boxRow strings.Builder
+	boxRow.WriteString("  " + label.Render(""))
+	for i, bf := range m.builder {
+		val := bf.value()
+		if len(val) > 5 {
+			val = val[:5]
+		}
+		box := fmt.Sprintf("[%-5s]", val)
+
+		var rendered string
+		switch {
+		case i == m.builderFocus && bf.optIdx == -1:
+			rendered = focusedBox.Render(box)
+		case i == m.builderFocus:
+			rendered = focusedBox.Render(box)
+		case bf.optIdx == -1:
+			rendered = customBox.Render(box)
+		default:
+			rendered = normalBox.Render(box)
+		}
+
+		if i < 4 {
+			// Pad to colW using lipgloss-aware width so ANSI codes don't throw off alignment.
+			rendered += strings.Repeat(" ", colW-lipgloss.Width(box))
+		}
+		boxRow.WriteString(rendered)
+	}
+	boxRow.WriteString("\n")
+
+	var typeRow string
+	{
+		focusedBf := m.builder[m.builderFocus]
+		jumps := builderTypeJumps[m.builderFocus]
+		labels := builderTypeLabels[m.builderFocus]
+		typeName := "custom"
+		if focusedBf.optIdx >= 0 {
+			cat := 0
+			for i := len(jumps) - 1; i >= 0; i-- {
+				if focusedBf.optIdx >= jumps[i] {
+					cat = i
+					break
+				}
+			}
+			typeName = labels[cat]
+		}
+		colOffset := m.builderFocus * colW
+		typeRow = "  " + label.Render("") + strings.Repeat(" ", colOffset) +
+			hint.Render("type:"+typeName) + "\n"
+	}
+
+	hintPad := strings.Repeat(" ", 12)
+	schedule := builderToSchedule(m.builder)
+	rawLine := "  " + hintPad + hint.Render(schedule) + "\n"
+
+	var transLine string
+	if translation := humanReadableSchedule(schedule); translation != "" {
+		transLine = "  " + hintPad + hint.Render(translation) + "\n"
+	}
+
+	otherFields := []string{"Command", "Comment"}
+	var otherRows strings.Builder
+	for i, f := range otherFields {
+		otherRows.WriteString("  " + label.Render(f) + m.formInputs[i+1].View() + "\n")
+	}
+
+	var errLine string
+	if m.formErr != "" {
+		errLine = "\n  " + errStyle.Render(m.formErr) + "\n"
+	}
+
+	return title + labelRow.String() + boxRow.String() + typeRow + rawLine + transLine + otherRows.String() + errLine
 }
 
 func (m model) viewDeleteConfirm() tea.View {
@@ -192,6 +320,11 @@ func (m model) viewHelp() tea.View {
 		row("e", "edit selected job") +
 		row("d", "delete selected job") +
 		row("t / space", "toggle enabled/disabled") +
+		"\n" +
+		"  " + section.Render("Schedule form") + "\n" +
+		row("alt+m", "toggle manual/builder mode") +
+		row("↑↓ (builder)", "cycle preset values") +
+		row("tab / →", "next sub-field (builder)") +
 		"\n" +
 		"  " + section.Render("App") + "\n" +
 		row("q", "quit") +

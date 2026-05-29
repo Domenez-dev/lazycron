@@ -256,3 +256,39 @@ func isInt(s string) bool {
 	_, err := strconv.Atoi(s)
 	return err == nil
 }
+
+// parseScheduleToBuilder parses a 5-field cron expression into builder fields,
+// matching each part against the preset list or falling back to custom text.
+func parseScheduleToBuilder(schedule string) [5]builderField {
+	b := initBuilder()
+	parts := strings.Fields(strings.TrimSpace(schedule))
+	for i := 0; i < 5 && i < len(parts); i++ {
+		val := strings.ToLower(parts[i])
+		found := false
+		for j, opt := range builderPresets[i] {
+			if val == opt {
+				b[i].optIdx = j
+				found = true
+				break
+			}
+		}
+		if !found {
+			b[i].optIdx = -1
+			b[i].custom = parts[i]
+		}
+	}
+	return b
+}
+
+// builderToSchedule joins the 5 builder field values into a cron expression string.
+func builderToSchedule(b [5]builderField) string {
+	parts := make([]string, 5)
+	for i, f := range b {
+		v := f.value()
+		if v == "" {
+			v = "*"
+		}
+		parts[i] = v
+	}
+	return strings.Join(parts, " ")
+}

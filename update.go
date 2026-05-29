@@ -50,6 +50,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			m.state = addView
 			m.formInputs = newFormInputs()
+			m.builder = initBuilder()
+			m.builderFocus = 0
 			m.formFocus = 0
 			m.formErr = ""
 			return m, textinput.Blink
@@ -65,6 +67,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			inputs[1].SetValue(j.Cmd)
 			inputs[2].SetValue(j.Comment)
 			m.formInputs = inputs
+			m.builder = parseScheduleToBuilder(j.Schedule)
+			m.builderFocus = 0
 			m.formFocus = 0
 			m.formErr = ""
 			m.editIndex = cursor
@@ -173,48 +177,86 @@ func (m model) updateExpand(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// scheduleValue returns the current schedule string from whichever input mode is active.
+func (m model) scheduleValue() string {
+	if m.schedMode == scheduleModeBuild {
+		return builderToSchedule(m.builder)
+	}
+	return strings.TrimSpace(m.formInputs[0].Value())
+}
+
+// toggleScheduleMode switches between manual and builder modes, syncing values.
+func (m model) toggleScheduleMode() model {
+	if m.schedMode == scheduleModeManual {
+		m.builder = parseScheduleToBuilder(strings.TrimSpace(m.formInputs[0].Value()))
+		m.builderFocus = 0
+		m.schedMode = scheduleModeBuild
+		m.formInputs[0].Blur()
+	} else {
+		sched := builderToSchedule(m.builder)
+		m.formInputs[0].SetValue(sched)
+		m.schedMode = scheduleModeManual
+		if m.formFocus == 0 {
+			m.formInputs[0].Focus()
+		}
+	}
+	return m
+}
+
+// focusFormField updates which text input is focused, respecting builder mode.
+func (m model) focusFormField(idx int) model {
+	m.formFocus = idx
+	for i := range m.formInputs {
+		// Never focus input[0] in builder mode — the builder owns that field.
+		if i == m.formFocus && !(i == 0 && m.schedMode == scheduleModeBuild) {
+			m.formInputs[i].Focus()
+		} else {
+			m.formInputs[i].Blur()
+		}
+	}
+	return m
+}
+
 func (m model) updateAddForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
+	key := msg.String()
+
+	if key == "esc" {
 		m.state = listView
 		return m, nil
+	}
 
+	if key == "alt+m" {
+		m = m.toggleScheduleMode()
+		return m, textinput.Blink
+	}
+
+	// In builder mode, schedule field (formFocus==0) is handled separately.
+	if m.schedMode == scheduleModeBuild && m.formFocus == 0 {
+		return m.updateBuilderField(msg)
+	}
+
+	switch key {
 	case "tab", "down":
-		m.formFocus = (m.formFocus + 1) % 3
-		for i := range m.formInputs {
-			if i == m.formFocus {
-				m.formInputs[i].Focus()
-			} else {
-				m.formInputs[i].Blur()
-			}
+		m = m.focusFormField((m.formFocus + 1) % 3)
+		if m.formFocus == 0 {
+			m.builderFocus = 0
 		}
 		return m, textinput.Blink
 
 	case "shift+tab", "up":
-		m.formFocus = (m.formFocus + 2) % 3
-		for i := range m.formInputs {
-			if i == m.formFocus {
-				m.formInputs[i].Focus()
-			} else {
-				m.formInputs[i].Blur()
-			}
+		m = m.focusFormField((m.formFocus + 2) % 3)
+		if m.formFocus == 0 {
+			m.builderFocus = 0
 		}
 		return m, textinput.Blink
 
 	case "enter":
 		if m.formFocus < 2 {
-			m.formFocus++
-			for i := range m.formInputs {
-				if i == m.formFocus {
-					m.formInputs[i].Focus()
-				} else {
-					m.formInputs[i].Blur()
-				}
-			}
+			m = m.focusFormField(m.formFocus + 1)
 			return m, textinput.Blink
 		}
 
-		schedule := strings.TrimSpace(m.formInputs[0].Value())
+		schedule := m.scheduleValue()
 		command := strings.TrimSpace(m.formInputs[1].Value())
 		comment := strings.TrimSpace(m.formInputs[2].Value())
 
@@ -257,6 +299,95 @@ func (m model) updateAddForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.formInputs[m.formFocus], cmd = m.formInputs[m.formFocus].Update(msg)
 	return m, cmd
+}
+
+// updateBuilderField handles key events when the schedule builder is focused.
+func (m model) updateBuilderField(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	key := msg.String()
+	bf := &m.builder[m.builderFocus]
+
+	switch key {
+	// tab exits the builder entirely and moves to the Command field.
+	case "tab":
+		m = m.focusFormField(1)
+		return m, textinput.Blink
+
+	// right/enter advance within builder sub-fields; on the last one, go to Command.
+	case "right", "enter":
+		if m.builderFocus < 4 {
+			m.builderFocus++
+		} else {
+			m = m.focusFormField(1)
+		}
+		return m, textinput.Blink
+
+	// left/shift+tab go back within builder sub-fields.
+	case "left", "shift+tab":
+		if m.builderFocus > 0 {
+			m.builderFocus--
+		}
+		return m, textinput.Blink
+
+	case "down":
+		if bf.optIdx >= 0 {
+			bf.optIdx = (bf.optIdx + 1) % len(bf.options)
+		} else {
+			bf.optIdx = 0
+			bf.custom = ""
+		}
+		return m, nil
+
+	case "up":
+		if bf.optIdx >= 0 {
+			bf.optIdx = (bf.optIdx - 1 + len(bf.options)) % len(bf.options)
+		} else {
+			bf.optIdx = len(bf.options) - 1
+			bf.custom = ""
+		}
+		return m, nil
+
+	// alt+j jumps to the next type category (*, num, */, name, -).
+	case "alt+j":
+		jumps := builderTypeJumps[m.builderFocus]
+		if bf.optIdx == -1 {
+			bf.optIdx = 0
+			bf.custom = ""
+		} else {
+			cat := 0
+			for i := len(jumps) - 1; i >= 0; i-- {
+				if bf.optIdx >= jumps[i] {
+					cat = i
+					break
+				}
+			}
+			bf.optIdx = jumps[(cat+1)%len(jumps)]
+		}
+		return m, nil
+
+	case "backspace", "ctrl+h":
+		if bf.optIdx == -1 {
+			if len(bf.custom) > 0 {
+				bf.custom = bf.custom[:len(bf.custom)-1]
+			}
+			if bf.custom == "" {
+				bf.optIdx = 0
+			}
+		}
+		return m, nil
+
+	default:
+		// Any printable character enters/appends to custom mode.
+		// No special-casing for '*' so "*/3" can be typed naturally.
+		if len(key) == 1 {
+			if bf.optIdx >= 0 {
+				bf.custom = key
+				bf.optIdx = -1
+			} else {
+				bf.custom += key
+			}
+		}
+		return m, nil
+	}
 }
 
 func (m model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
