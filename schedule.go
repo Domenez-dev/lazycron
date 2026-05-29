@@ -86,6 +86,10 @@ func buildTimeDesc(min, hour string) string {
 	hourIsWild := hour == "*"
 	minIsInt := isInt(min)
 	hourIsInt := isInt(hour)
+	minIsRange := strings.Contains(min, "-")
+	minIsList := strings.Contains(min, ",")
+	hourIsRange := strings.Contains(hour, "-")
+	hourIsList := strings.Contains(hour, ",")
 
 	switch {
 	// * * → every minute
@@ -121,6 +125,11 @@ func buildTimeDesc(min, hour string) string {
 	case (min == "0" || min == "00") && hourIsWild:
 		return "every hour"
 
+	// 0 N-M → every hour from N through M
+	case (min == "0" || min == "00") && hourIsRange:
+		p := strings.SplitN(hour, "-", 2)
+		return fmt.Sprintf("every hour from %s through %s", p[0], p[1])
+
 	// MM * → at minute MM past every hour
 	case minIsInt && hourIsWild:
 		m, _ := strconv.Atoi(min)
@@ -131,13 +140,24 @@ func buildTimeDesc(min, hour string) string {
 		h, _ := strconv.Atoi(hour)
 		return fmt.Sprintf("every minute past hour %02d", h)
 
+	// * N-M → every minute past every hour from N through M
+	case minIsWild && hourIsRange:
+		p := strings.SplitN(hour, "-", 2)
+		return fmt.Sprintf("every minute past every hour from %s through %s", p[0], p[1])
+
 	// MM */N → at minute MM past every Nth hour
 	case minIsInt && hourIsStep:
 		m, _ := strconv.Atoi(min)
 		return fmt.Sprintf("at minute %d past every %s hour", m, ordinal(hourStep))
 
+	// MM N-M → at minute MM past every hour from N through M
+	case minIsInt && hourIsRange:
+		m, _ := strconv.Atoi(min)
+		p := strings.SplitN(hour, "-", 2)
+		return fmt.Sprintf("at minute %d past every hour from %s through %s", m, p[0], p[1])
+
 	// MM HH,HH,... → at HH:MM and HH:MM
-	case minIsInt && strings.Contains(hour, ","):
+	case minIsInt && hourIsList:
 		m, _ := strconv.Atoi(min)
 		hourParts := strings.Split(hour, ",")
 		times := make([]string, 0, len(hourParts))
@@ -149,13 +169,70 @@ func buildTimeDesc(min, hour string) string {
 			n, _ := strconv.Atoi(h)
 			times = append(times, fmt.Sprintf("%02d:%02d", n, m))
 		}
-		if len(times) == 2 {
-			return "at " + times[0] + " and " + times[1]
+		return "at " + joinStrList(times)
+
+	// N-M * → at every minute from N through M past every hour
+	case minIsRange && hourIsWild:
+		p := strings.SplitN(min, "-", 2)
+		return fmt.Sprintf("at every minute from %s through %s past every hour", p[0], p[1])
+
+	// N-M HH → at every minute from N through M past hour HH
+	case minIsRange && hourIsInt:
+		h, _ := strconv.Atoi(hour)
+		p := strings.SplitN(min, "-", 2)
+		return fmt.Sprintf("at every minute from %s through %s past hour %02d", p[0], p[1], h)
+
+	// N-M A-B → at every minute from N through M past every hour from A through B
+	case minIsRange && hourIsRange:
+		pm := strings.SplitN(min, "-", 2)
+		ph := strings.SplitN(hour, "-", 2)
+		return fmt.Sprintf("at every minute from %s through %s past every hour from %s through %s", pm[0], pm[1], ph[0], ph[1])
+
+	// */N A-B → at every Nth minute past every hour from A through B
+	case minIsStep && hourIsRange:
+		ph := strings.SplitN(hour, "-", 2)
+		return fmt.Sprintf("at every %s minute past every hour from %s through %s", ordinal(minStep), ph[0], ph[1])
+
+	// N,M,... * → at minutes N, M, ... past every hour
+	case minIsList && hourIsWild:
+		return "at minutes " + joinStrList(strings.Split(min, ",")) + " past every hour"
+
+	// N,M,... A-B → at minutes N, M, ... past every hour from A through B
+	case minIsList && hourIsRange:
+		ph := strings.SplitN(hour, "-", 2)
+		return fmt.Sprintf("at minutes %s past every hour from %s through %s", joinStrList(strings.Split(min, ",")), ph[0], ph[1])
+
+	// N,M HH → at HH:N and HH:M
+	case minIsList && hourIsInt:
+		h, _ := strconv.Atoi(hour)
+		parts := strings.Split(min, ",")
+		times := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if !isInt(p) {
+				return ""
+			}
+			m, _ := strconv.Atoi(p)
+			times = append(times, fmt.Sprintf("%02d:%02d", h, m))
 		}
-		return "at " + strings.Join(times[:len(times)-1], ", ") + ", and " + times[len(times)-1]
+		return "at " + joinStrList(times)
 	}
 
 	return ""
+}
+
+// joinStrList joins a slice into "a", "a and b", or "a, b, and c".
+func joinStrList(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " and " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + ", and " + items[len(items)-1]
+	}
 }
 
 func buildDOMDesc(dom string) string {
