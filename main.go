@@ -6,6 +6,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
+const version = "0.1"
+
 func main() {
 	p := tea.NewProgram(InitialModel())
 	if _, err := p.Run(); err != nil {

@@ -11,6 +11,7 @@ import (
 func (m model) bottomBar() string {
 	k := lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 	d := lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
+	l := lipgloss.NewStyle().Foreground(lipgloss.Color("012")).Hyperlink("https://github.com/Domenez-dev").UnderlineStyle(lipgloss.UnderlineCurly)
 	s := d.Render("  ")
 
 	switch m.state {
@@ -61,7 +62,11 @@ func (m model) bottomBar() string {
 		return k.Render(" esc") + d.Render("/") + k.Render("enter") + d.Render(" close")
 
 	case helpView:
-		return k.Render(" esc") + d.Render("/") + k.Render("?") + d.Render("/") + k.Render("q") + d.Render(" close")
+		left := k.Render(" esc") + d.Render("/") + k.Render("?") + d.Render("/") + k.Render("q") + d.Render(" close")
+		lazycron_linked := k.Hyperlink("https://github.com/Domenez-dev/lazycron").UnderlineStyle(lipgloss.UnderlineCurly)
+		right := lazycron_linked.Render("LazyCron v"+version) + d.Render(" by ") + l.Render("Domenez-dev") + s
+		pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+		return left + strings.Repeat(" ", pad) + right
 	}
 	return ""
 }
@@ -304,7 +309,7 @@ func (m model) viewHelp() tea.View {
 		return "  " + k.Render(keys) + d.Render(desc) + "\n"
 	}
 
-	content := bold.Render("  Help") + "\n\n" +
+	content := bold.Render("LazyCron v0.1:") + d.Render(" Help Menu") + "\n\n" +
 		"  " + section.Render("Navigation") + "\n" +
 		row("j / ↓", "move down") +
 		row("k / ↑", "move up") +
