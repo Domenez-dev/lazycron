@@ -11,9 +11,10 @@
 ---
 
 ## Install
+you can install it from the 'install.sh' script using curl (latest version - v0.1 - is only available for Arch Linux right now): 
 
 ```bash
-go install github.com/domenez-dev/lazycron@latest
+curl -fsSL "https://raw.githubusercontent.com/Domenez-dev/lazycron/main/install.sh" | bash
 ```
 
 Or build from source:
