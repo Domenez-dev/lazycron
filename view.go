@@ -16,12 +16,10 @@ func (m model) bottomBar() string {
 	switch m.state {
 	case listView:
 		left := k.Render(" q") + d.Render(" quit") + s +
-			k.Render("a") + d.Render(" add") + s +
-			k.Render("e") + d.Render(" edit") + s +
-			k.Render("d") + d.Render(" delete") + s +
+			k.Render("a,e,d") + d.Render(": add, edit, delete") + s +
 			k.Render("t") + d.Render(" toggle") + s +
 			k.Render("enter") + d.Render(" expand") + s +
-			k.Render(":") + d.Render(" goto")
+			k.Render(":") + d.Render(" go to line")
 		right := k.Render("?") + d.Render(" help ")
 		pad := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 		if pad < 1 {
